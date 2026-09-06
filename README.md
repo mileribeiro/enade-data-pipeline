@@ -1,0 +1,120 @@
+# Desafio Técnico - Analista de Dados Pleno
+
+Pipeline em AWS para transformar os Microdados ENADE 2023 em dados analíticos e um dashboard para a coordenação acadêmica da Unifor.
+
+## Objetivo
+
+Responder às três perguntas do desafio:
+
+1. A Unifor está no ENADE 2023? Quais cursos, áreas e modalidades ela possui?
+2. A nota geral média difere entre Presencial e EaD?
+3. Quais são os 10 cursos da Unifor com maior nota geral média?
+
+## Arquitetura
+
+```text
+Fonte oficial do INEP
+        ↓
+AWS Glue Job de ingestão → S3 Bronze
+        ↓
+AWS Glue Job de transformação → S3 Silver
+        ↓
+AWS Glue Job de modelagem → S3 Gold
+        ↓
+Glue Data Catalog → Athena → QuickSight
+```
+
+Os Glue Jobs são executados em ordem: Bronze, Silver e Gold. Cada job executa suas validações de qualidade e falha quando encontra um erro crítico, impedindo a publicação da camada seguinte. Logs e erros ficam registrados no CloudWatch.
+
+## Camadas de dados
+
+| Camada | Armazenamento | Conteúdo |
+| Bronze | Bucket S3 Bronze | Arquivos originais do INEP, sem alteração. |
+| Silver | Bucket S3 Silver | Dados tipados, tratados e agregados por curso, em Parquet. |
+| Gold | Bucket S3 Gold | Modelo dimensional pronto para consulta no Athena, em Parquet. |
+
+Os buckets terão acesso privado, criptografia e versionamento. Dados brutos não serão versionados no Git.
+
+## Pipeline
+
+### 1. Ingestão - Bronze
+
+Um AWS Glue Job em Python baixa o pacote oficial dos [Microdados ENADE 2023](https://download.inep.gov.br/microdados/microdados_enade_2023.zip), preserva o arquivo original e grava os arquivos extraídos no bucket Bronze. Não há limpeza ou transformação nesta etapa.
+
+### 2. Transformação - Silver
+
+Um AWS Glue Job (PySpark) lê do Bronze apenas os arquivos necessários ao escopo obrigatório:
+
+- `microdados2023_arq1.txt`: atributos de curso, IES, área e modalidade;
+- `microdados2023_arq3.txt`: nota geral (`NT_GER`).
+
+Os arquivos usam `;` como delimitador. O valor `.` em `NT_GER` será convertido em `NULL` antes dos cálculos.
+
+Cada origem é agregada **separadamente** por `CO_CURSO` e gravada em Parquet no bucket Silver.
+
+### 3. Modelagem - Gold
+
+Um AWS Glue Job (PySpark) lê os agregados Silver e cria:
+
+- dimensões de curso, IES, área e modalidade;
+- fato de desempenho, com uma linha por `CO_CURSO`;
+- quantidade total de registros, notas válidas, notas nulas, soma e média de `NT_GER`.
+
+Os dados Gold serão registrados no Glue Data Catalog e consultados pelo Athena.
+
+## Regra essencial de LGPD
+
+Os 32 arquivos do ENADE foram embaralhados por variáveis diferentes. Portanto, **não é permitido unir arquivos no nível de estudante**, nem por posição de linha.
+
+O único relacionamento permitido é por `CO_CURSO`, depois de cada arquivo ser agregado independentemente no nível de curso. Essa é a principal regra do pipeline.
+
+## Qualidade de dados
+
+Cada Glue Job executa as validações da sua própria camada. Falhas críticas impedem a publicação da próxima camada.
+
+- arquivos e colunas esperadas existem;
+- `NT_GER` é convertida corretamente e está entre 0 e 100 quando preenchida;
+- notas válidas + nulas correspondem ao total de registros;
+- um curso não possui atributos conflitantes;
+- a fato Gold possui uma única linha por `CO_CURSO`;
+- todas as chaves da fato encontram suas dimensões.
+
+## Consultas e dashboard
+
+As três respostas serão escritas em SQL, executadas no Athena e usadas diretamente no dashboard.
+
+- **Q1:** cursos distintos da Unifor, por área e modalidade;
+- **Q2:** média ponderada por estudante com nota válida: `SUM(soma_nt_ger) / SUM(qtde_notas_validas)`;
+- **Q3:** Top 10 cursos da Unifor por média de `NT_GER`.
+
+O dashboard será feito no **Amazon QuickSight**, escolhido por sua integração nativa com Athena. Ele exibirá as respostas, quantidade de notas válidas, filtros simples e uma nota metodológica sobre a regra de agregação.
+
+## Identificação da Unifor
+
+O ENADE informa somente o código numérico da IES (`CO_IES`), sem o nome da instituição. Para responder a Q1, o projeto fará o cruzamento desse código com uma fonte pública complementar, como o [Cadastro e-MEC](https://emec.mec.gov.br/) ou os Microdados do Censo da Educação Superior.
+
+O resultado desse cruzamento será registrado como uma tabela de referência com `CO_IES`, nome da instituição, URL da fonte e data da consulta. Assim, o código da Unifor será comprovado e não presumido.
+
+## Entrega incremental - análises opcionais
+
+As análises abaixo serão desenvolvidas somente após as três perguntas obrigatórias, os testes e o dashboard estarem concluídos.
+
+### Benchmark de IES
+
+Para cada área (`CO_GRUPO`) em que a Unifor atua, será identificado o melhor desempenho de IES do Brasil. O dashboard exibirá a média da IES líder, a média da Unifor e a diferença entre ambas, sempre usando notas válidas e a mesma regra de ponderação da Q2.
+
+### Perfil socioeconômico e percepção
+
+Serão explorados `QE_I08` (faixa de renda) e, se houver tempo, as respostas de percepção do curso no `arq4`. Cada arquivo adicional será agregado separadamente por `CO_CURSO` antes de ser relacionado à média de nota do curso.
+
+A análise será descritiva e no nível de curso: ela não associa resposta e nota de um mesmo estudante, não sugere causalidade e respeita a restrição de LGPD dos microdados.
+
+## Execução local
+
+Os mesmos scripts Python serão empacotados em Docker. O Docker Compose permitirá validar a pipeline localmente com os dados extraídos do INEP antes da publicação em AWS. A configuração e os comandos exatos serão adicionados junto da implementação.
+
+## Limitações
+
+- O ENADE 2023 contempla apenas as áreas avaliadas naquela edição.
+- Notas ausentes não serão imputadas; serão excluídas das médias e reportadas.
+- Os microdados não permitem análises que combinem dados individuais de arquivos diferentes.
