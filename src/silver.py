@@ -8,9 +8,6 @@ Outputs:
     s3://<bucket>/<year>/silver/<source-file>/
     s3://<bucket>/<year>/silver/dim_variable/
     s3://<bucket>/<year>/silver/dim_variable_value/
-
-Codes remain strings in Silver to preserve identifiers and leading zeroes. NT_GER, the
-score required by the case, is converted to DECIMAL(5,2) before Gold aggregation.
 """
 
 from __future__ import annotations
@@ -21,6 +18,7 @@ import tempfile
 import unicodedata
 import zipfile
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
@@ -41,6 +39,8 @@ RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/
 PACKAGE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
 NAMESPACES = {"xlsx": XLSX_NAMESPACE}
 VARIABLE_SHEET_NAME = "DICIONÁRIO DE VARIÁVEIS"
+IES_REFERENCE_FILE_NAME = "ies.xls"
+IES_REFERENCE_REQUIRED_COLUMNS = {"CODIGO_IES", "INSTITUICAO_IES", "SIGLA", "MUNICIPIO", "UF", "ORGANIZACAO_ACADEMICA", "CATEGORIA_ADMINISTRATIVA", "SITUACAO_DA_IES"}
 
 
 class SilverTransformationError(RuntimeError):
@@ -58,21 +58,10 @@ def optional_argument(name: str, default: str) -> str:
 
 
 def resolve_year() -> str:
-    direct_year = optional_argument("YEAR", "")
-    if direct_year:
-        return direct_year
-    workflow_name = optional_argument("WORKFLOW_NAME", "")
-    workflow_run_id = optional_argument("WORKFLOW_RUN_ID", "")
-    if not workflow_name or not workflow_run_id:
-        raise SilverTransformationError("YEAR is required for a direct run or as a Workflow run property.")
-    try:
-        properties = boto3.client("glue").get_workflow_run_properties(
-            Name=workflow_name,
-            RunId=workflow_run_id,
-        )["RunProperties"]
-    except (BotoCoreError, ClientError) as error:
-        raise SilverTransformationError(f"Could not read Workflow run properties: {error}") from error
-    return properties.get("YEAR", "")
+    year = optional_argument("YEAR", "")
+    if not year:
+        raise SilverTransformationError("--YEAR is required.")
+    return year
 
 
 def normalize_header(value: str) -> str:
@@ -143,6 +132,82 @@ def sheet_rows(dictionary_path: Path) -> list[dict[str, str]]:
             }
             for row in root.findall(".//xlsx:sheetData/xlsx:row", NAMESPACES)
         ]
+
+
+
+class IesHtmlTableParser(HTMLParser):
+    """Parse the table exported by e-MEC with an .xls extension."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self.current_row: list[str] = []
+        self.current_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"td", "th"}:
+            self.current_cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self.current_cell is not None:
+            self.current_cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self.current_cell is not None:
+            self.current_row.append(clean_text("".join(self.current_cell)))
+            self.current_cell = None
+        elif tag == "tr" and self.current_row:
+            self.rows.append(self.current_row)
+            self.current_row = []
+
+
+def ies_reference_rows(path: Path, year: str, source_key: str, source_staged_at: str) -> list[dict[str, str | int | None]]:
+    parser = IesHtmlTableParser()
+    parser.feed(path.read_bytes().decode("utf-8-sig", errors="replace"))
+    parser.close()
+    if not parser.rows:
+        raise SilverTransformationError("IES reference is empty or is not an HTML table.")
+
+    headers = [normalize_column_name(value) for value in parser.rows[0]]
+    if len(headers) != len(set(headers)) or not IES_REFERENCE_REQUIRED_COLUMNS.issubset(headers):
+        raise SilverTransformationError("IES reference does not contain the expected e-MEC columns.")
+
+    rows_by_code: dict[str, dict[str, str | int | None]] = {}
+    for source_row, values in enumerate(parser.rows[1:], start=2):
+        if not any(values):
+            continue
+        if len(values) != len(headers):
+            raise SilverTransformationError(f"Invalid IES reference row {source_row}: expected {len(headers)} cells, found {len(values)}.")
+        source = dict(zip(headers, values))
+        code = clean_text(source["CODIGO_IES"])
+        name = clean_text(source["INSTITUICAO_IES"])
+        if not code.isdigit() or not name:
+            raise SilverTransformationError(f"Invalid IES reference record at row {source_row}.")
+        record = {
+            "year": year,
+            "co_ies": code,
+            "no_ies": name,
+            "sg_ies": clean_text(source["SIGLA"]) or None,
+            "no_mantenedora": clean_text(source.get("RAZAO_SOCIAL", "")) or None,
+            "nu_cnpj_mantenedora": clean_text(source.get("CNPJ", "")) or None,
+            "no_municipio": clean_text(source["MUNICIPIO"]) or None,
+            "sg_uf": clean_text(source["UF"]) or None,
+            "no_organizacao_academica": clean_text(source["ORGANIZACAO_ACADEMICA"]) or None,
+            "no_categoria_administrativa": clean_text(source["CATEGORIA_ADMINISTRATIVA"]) or None,
+            "situacao_ies": clean_text(source["SITUACAO_DA_IES"]) or None,
+            "source_reference_key": source_key,
+            "source_url": "https://emec.mec.gov.br/",
+            "source_staged_at": source_staged_at,
+            "source_row": source_row,
+        }
+        previous = rows_by_code.get(code)
+        if previous and {key: value for key, value in previous.items() if key != "source_row"} != {key: value for key, value in record.items() if key != "source_row"}:
+            raise SilverTransformationError(f"Conflicting IES records found for CO_IES {code}.")
+        rows_by_code.setdefault(code, record)
+
+    if not rows_by_code:
+        raise SilverTransformationError("IES reference has no valid records.")
+    return [rows_by_code[code] for code in sorted(rows_by_code, key=int)]
 
 
 def vector_character_values(variable_name: str, categories: list[str]) -> list[tuple[str, str]]:
@@ -258,6 +323,7 @@ def clean_bronze_frame(frame: Any, source_file: str, processed_at: str) -> Any:
 
 VARIABLE_SCHEMA = StructType([StructField("year", StringType(), False), StructField("variable_name", StringType(), False), StructField("data_type", StringType(), True), StructField("max_length", IntegerType(), True), StructField("description", StringType(), True), StructField("categories_raw", ArrayType(StringType()), False), StructField("rule_type", StringType(), False), StructField("minimum_value", StringType(), True), StructField("maximum_value", StringType(), True), StructField("source_row", IntegerType(), False), StructField("source_dictionary_key", StringType(), False)])
 VALUE_SCHEMA = StructType([StructField("year", StringType(), False), StructField("variable_name", StringType(), False), StructField("value_code", StringType(), False), StructField("value_label", StringType(), False), StructField("source_dictionary_key", StringType(), False)])
+IES_SCHEMA = StructType([StructField("year", StringType(), False), StructField("co_ies", StringType(), False), StructField("no_ies", StringType(), False), StructField("sg_ies", StringType(), True), StructField("no_mantenedora", StringType(), True), StructField("nu_cnpj_mantenedora", StringType(), True), StructField("no_municipio", StringType(), True), StructField("sg_uf", StringType(), True), StructField("no_organizacao_academica", StringType(), True), StructField("no_categoria_administrativa", StringType(), True), StructField("situacao_ies", StringType(), True), StructField("source_reference_key", StringType(), False), StructField("source_url", StringType(), False), StructField("source_staged_at", StringType(), False), StructField("source_row", IntegerType(), False)])
 
 
 def main() -> None:
@@ -269,12 +335,17 @@ def main() -> None:
     bucket = arguments["TARGET_BUCKET"]
     bronze_prefix = f"{year}/bronze"
     source_key = f"{bronze_prefix}/dictionary.xlsx"
+    ies_reference_key = f"{bronze_prefix}/archive/{IES_REFERENCE_FILE_NAME}"
     with tempfile.TemporaryDirectory(prefix="enade_dictionary_") as directory:
         dictionary_path = Path(directory) / "dictionary.xlsx"
+        ies_reference_path = Path(directory) / IES_REFERENCE_FILE_NAME
         try:
             s3_client = boto3.client("s3")
             s3_client.download_file(bucket, source_key, str(dictionary_path))
+            s3_client.download_file(bucket, ies_reference_key, str(ies_reference_path))
+            ies_staged_at = s3_client.head_object(Bucket=bucket, Key=ies_reference_key)["LastModified"].astimezone(timezone.utc).isoformat()
             variables, values = normalize_dictionary(sheet_rows(dictionary_path), year, source_key)
+            ies_rows = ies_reference_rows(ies_reference_path, year, ies_reference_key, ies_staged_at)
             txt_keys = bronze_txt_keys(s3_client, bucket, bronze_prefix)
         except (BotoCoreError, ClientError) as error:
             raise SilverTransformationError(f"Could not read Bronze inputs: {error}") from error
@@ -289,6 +360,7 @@ def main() -> None:
     silver_prefix = f"s3://{bucket}/{year}/silver"
     spark.createDataFrame(variables, VARIABLE_SCHEMA).write.mode("overwrite").parquet(f"{silver_prefix}/dim_variable/")
     spark.createDataFrame(values, VALUE_SCHEMA).write.mode("overwrite").parquet(f"{silver_prefix}/dim_variable_value/")
+    spark.createDataFrame(ies_rows, IES_SCHEMA).write.mode("overwrite").parquet(f"{silver_prefix}/dim_ies_reference/")
 
     processed_at = datetime.now(timezone.utc).isoformat()
     for key in txt_keys:
@@ -297,7 +369,7 @@ def main() -> None:
         bronze_frame = spark.read.option("header", "true").option("sep", ";").option("encoding", "ISO-8859-1").csv(f"s3://{bucket}/{key}")
         clean_bronze_frame(bronze_frame, source_file, processed_at).write.mode("overwrite").parquet(f"{silver_prefix}/{dataset_name}/")
 
-    print(f"Published {len(txt_keys)} Silver datasets, {len(variables)} variables and {len(values)} dictionary values.")
+    print(f"Published {len(txt_keys)} Silver datasets, {len(variables)} variables, {len(values)} dictionary values and {len(ies_rows)} IES reference records.")
     job.commit()
 
 

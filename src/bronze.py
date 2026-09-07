@@ -50,28 +50,11 @@ def optional_argument(name: str, default: str) -> str:
 
 
 def resolve_year() -> str:
-    """Read YEAR directly or from the active Glue Workflow run."""
+    """Read the year supplied in the Glue Job arguments."""
 
-    direct_year = optional_argument("YEAR", "")
-    if direct_year:
-        return direct_year
-
-    workflow_name = optional_argument("WORKFLOW_NAME", "")
-    workflow_run_id = optional_argument("WORKFLOW_RUN_ID", "")
-    if not workflow_name or not workflow_run_id:
-        raise BronzeIngestionError("YEAR is required for a direct run or must be supplied as a Workflow run property.")
-
-    try:
-        properties = boto3.client("glue").get_workflow_run_properties(
-            Name=workflow_name,
-            RunId=workflow_run_id,
-        )["RunProperties"]
-    except (BotoCoreError, ClientError) as error:
-        raise BronzeIngestionError(f"Could not read Workflow run properties: {error}") from error
-
-    year = properties.get("YEAR", "")
+    year = optional_argument("YEAR", "")
     if not year:
-        raise BronzeIngestionError("Workflow run property YEAR is required.")
+        raise BronzeIngestionError("--YEAR is required.")
     return year
 
 

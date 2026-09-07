@@ -39,7 +39,7 @@ Os buckets terão acesso privado, criptografia e versionamento. Dados brutos nã
 
 ### 1. Ingestão - Bronze
 
-O ZIP oficial dos [Microdados ENADE 2023](https://download.inep.gov.br/microdados/microdados_enade_2023.zip) é enviado manualmente para `bronze/archive/`. Um AWS Glue Job em Python valida o pacote e grava os TXT extraídos e o dicionário na raiz da Bronze. Não há limpeza ou transformação nesta etapa.
+O ZIP oficial dos [Microdados ENADE 2023](https://download.inep.gov.br/microdados/microdados_enade_2023.zip) e a referência pública e-MEC `ies.xls` ficam na pasta local `data/`. O Terraform os publica em `2023/bronze/archive/` durante o `terraform apply`. Um AWS Glue Job em Python valida o pacote e grava os TXT extraídos e o dicionário na raiz da Bronze. Não há limpeza ou transformação nesta etapa.
 
 ### 2. Transformação - Silver
 
@@ -48,7 +48,8 @@ Um AWS Glue Job (PySpark) lê os TXT da Bronze e o dicionário oficial. Cada TXT
 As transformações são seguras e reversíveis: padronização de nomes de colunas, remoção de espaços nas extremidades e conversão de campos vazios para `NULL`. Códigos permanecem como texto para preservar zeros à esquerda; `NT_GER` é convertido para `DECIMAL(5,2)`, com `.` também tratado como ausência de nota. O job também publica:
 
 - `silver/dim_variable`: definição, tipo, tamanho e regra de domínio de cada variável;
-- `silver/dim_variable_value`: códigos e rótulos para variáveis discretas.
+- `silver/dim_variable_value`: códigos e rótulos para variáveis discretas;
+- `silver/dim_ies_reference`: referência e-MEC normalizada, com código, nome, sigla, localização, categoria e proveniência.
 
 Um segundo job valida exclusivamente a Silver contra essas tabelas: colunas documentadas, datasets não vazios, domínios enumerados, intervalos numéricos e vetores de respostas. Para `NT_GER`, registra volume e percentual de nulos e falha em caso de conversão inválida, tipo diferente de decimal ou nota fora de 0 a 100.
 
@@ -56,7 +57,7 @@ Um segundo job valida exclusivamente a Silver contra essas tabelas: colunas docu
 
 Um AWS Glue Job (PySpark) lê os agregados Silver e cria:
 
-- dimensões de curso, IES, área e modalidade;
+- dimensões de curso, IES, área e modalidade; a dimensão de IES é enriquecida pela referência pública e-MEC;
 - fato de desempenho, com uma linha por `CO_CURSO`;
 - quantidade total de registros, notas válidas, notas nulas, soma e média de `NT_GER`.
 
@@ -91,9 +92,9 @@ O dashboard será feito no **Amazon QuickSight**, escolhido por sua integração
 
 ## Identificação da Unifor
 
-O ENADE informa somente o código numérico da IES (`CO_IES`), sem o nome da instituição. Para responder a Q1, o projeto fará o cruzamento desse código com uma fonte pública complementar, como o [Cadastro e-MEC](https://emec.mec.gov.br/) ou os Microdados do Censo da Educação Superior.
+O ENADE informa somente o código numérico da IES (`CO_IES`), sem o nome da instituição. A referência pública [Cadastro e-MEC](https://emec.mec.gov.br/) é preservada na Bronze, normalizada na Silver e usada para enriquecer `gold/dim_ies`.
 
-O resultado desse cruzamento será registrado como uma tabela de referência com `CO_IES`, nome da instituição, URL da fonte e data da consulta. Assim, o código da Unifor será comprovado e não presumido.
+A dimensão final inclui `CO_IES`, nome, sigla, município, UF, categoria administrativa, URL da fonte e data de disponibilização no S3. A qualidade Gold falha se algum código de IES do ENADE não tiver referência pública correspondente. Assim, a Unifor é identificada pelo código `555`, sem suposição manual.
 
 ## Entrega incremental - análises opcionais
 

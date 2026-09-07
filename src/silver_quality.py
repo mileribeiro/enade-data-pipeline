@@ -38,18 +38,10 @@ def optional_argument(name: str, default: str) -> str:
 
 
 def resolve_year() -> str:
-    direct_year = optional_argument("YEAR", "")
-    if direct_year:
-        return direct_year
-    workflow_name = optional_argument("WORKFLOW_NAME", "")
-    workflow_run_id = optional_argument("WORKFLOW_RUN_ID", "")
-    if not workflow_name or not workflow_run_id:
-        raise SilverQualityError("YEAR is required for a direct run or as a Workflow run property.")
-    try:
-        properties = boto3.client("glue").get_workflow_run_properties(Name=workflow_name, RunId=workflow_run_id)["RunProperties"]
-    except (BotoCoreError, ClientError) as error:
-        raise SilverQualityError(f"Could not read Workflow run properties: {error}") from error
-    return properties.get("YEAR", "")
+    year = optional_argument("YEAR", "")
+    if not year:
+        raise SilverQualityError("--YEAR is required.")
+    return year
 
 
 def silver_dataset_names(s3_client: Any, bucket: str, data_prefix: str) -> list[str]:
@@ -60,7 +52,7 @@ def silver_dataset_names(s3_client: Any, bucket: str, data_prefix: str) -> list[
             relative = PurePosixPath(key).relative_to(data_prefix)
             if len(relative.parts) >= 2 and relative.suffix.lower() == ".parquet":
                 names.add(relative.parts[0])
-    reserved_names = {"data", "metadata", "dim_variable", "dim_variable_value"}
+    reserved_names = {"data", "metadata", "dim_variable", "dim_variable_value", "dim_ies_reference"}
     return sorted(names - reserved_names)
 
 
@@ -129,6 +121,23 @@ def nt_ger_quality(frame: Any, dataset: str) -> tuple[dict[str, Any] | None, lis
     return metrics, findings
 
 
+
+def ies_reference_quality(frame: Any) -> tuple[int, list[dict[str, Any]]]:
+    required_columns = {"year", "co_ies", "no_ies", "source_reference_key", "source_url", "source_staged_at", "source_row"}
+    findings: list[dict[str, Any]] = []
+    missing = sorted(required_columns - set(frame.columns))
+    if missing:
+        return 0, [{"severity": "CRITICAL", "code": "IES_REFERENCE_SCHEMA_INVALID", "columns": missing}]
+    row_count = frame.count()
+    if row_count == 0:
+        findings.append({"severity": "CRITICAL", "code": "IES_REFERENCE_EMPTY"})
+    if frame.where(F.col("co_ies").isNull() | (F.trim(F.col("co_ies")) == "") | F.col("no_ies").isNull() | (F.trim(F.col("no_ies")) == "")).limit(1).count():
+        findings.append({"severity": "CRITICAL", "code": "IES_REFERENCE_REQUIRED_VALUE_MISSING"})
+    if frame.groupBy("year", "co_ies").count().where("count > 1").limit(1).count():
+        findings.append({"severity": "CRITICAL", "code": "IES_REFERENCE_DUPLICATE_CODE"})
+    return row_count, findings
+
+
 def main() -> None:
     arguments = getResolvedOptions(sys.argv, ["JOB_NAME", "TARGET_BUCKET"])
     year = resolve_year()
@@ -144,6 +153,7 @@ def main() -> None:
     silver_path = f"s3://{bucket}/{year}/silver"
     variables = spark.read.parquet(f"{silver_path}/dim_variable/")
     values = spark.read.parquet(f"{silver_path}/dim_variable_value/")
+    ies_reference = spark.read.parquet(f"{silver_path}/dim_ies_reference/")
     allowed_values = {row["variable_name"]: sorted(row["allowed_values"]) for row in values.groupBy("variable_name").agg(F.collect_set("value_code").alias("allowed_values")).collect()}
     rules = [row.asDict(recursive=True) for row in variables.where(F.col("rule_type").isin("ENUM", "RANGE", "FIXED", "VECTOR_CHARSET")).collect()]
     for rule in rules:
@@ -159,6 +169,8 @@ def main() -> None:
         raise SilverQualityError(f"No Parquet datasets found in s3://{bucket}/{data_prefix}/")
 
     findings: list[dict[str, Any]] = []
+    ies_reference_rows, ies_reference_findings = ies_reference_quality(ies_reference)
+    findings.extend(ies_reference_findings)
     nt_ger_metrics: list[dict[str, Any]] = []
     checked_rules = 0
     for dataset in datasets:
@@ -179,7 +191,7 @@ def main() -> None:
             if sample:
                 findings.append({"severity": "CRITICAL", "code": "VALUE_OUTSIDE_DOCUMENTED_DOMAIN", "dataset": dataset, "variable_name": rule["variable_name"], "rule_type": rule["rule_type"], "expected_length": rule.get("max_length"), "invalid_value_sample": sample[:MAX_SAMPLE_VALUES], "sample_truncated": len(sample) > MAX_SAMPLE_VALUES})
 
-    report = {"status": "FAILED" if findings else "PASSED", "validated_at": datetime.now(timezone.utc).isoformat(), "bucket": bucket, "silver_prefix": f"{year}/silver", "report_key": f"{year}/silver/quality.json", "summary": {"datasets_checked": len(datasets), "rules_checked": checked_rules, "critical_findings": len(findings), "nt_ger": nt_ger_metrics}, "findings": findings}
+    report = {"status": "FAILED" if findings else "PASSED", "validated_at": datetime.now(timezone.utc).isoformat(), "bucket": bucket, "silver_prefix": f"{year}/silver", "report_key": f"{year}/silver/quality.json", "summary": {"datasets_checked": len(datasets), "rules_checked": checked_rules, "critical_findings": len(findings), "nt_ger": nt_ger_metrics, "ies_reference_rows": ies_reference_rows}, "findings": findings}
     try:
         boto3.client("s3").put_object(Bucket=bucket, Key=report["report_key"], Body=json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"), ContentType="application/json")
     except (BotoCoreError, ClientError) as error:
