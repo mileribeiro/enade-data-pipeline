@@ -98,7 +98,7 @@ data "aws_iam_policy_document" "glue_bronze_s3" {
       "s3:GetObject",
     ]
     resources = [
-      format("%s/scripts/bronze_ingestion.py", aws_s3_bucket.data_lake.arn),
+      format("%s/scripts/bronze.py", aws_s3_bucket.data_lake.arn),
       format("%s/scripts/bronze_quality.py", aws_s3_bucket.data_lake.arn),
     ]
   }
@@ -132,16 +132,16 @@ resource "aws_iam_role_policy" "glue_bronze_s3" {
   policy = data.aws_iam_policy_document.glue_bronze_s3.json
 }
 
-resource "aws_s3_object" "bronze_ingestion_script" {
+resource "aws_s3_object" "bronze_script" {
   bucket                 = aws_s3_bucket.data_lake.id
-  key                    = "scripts/bronze_ingestion.py"
-  source                 = "${path.module}/../src/bronze_ingestion.py"
-  etag                   = filemd5("${path.module}/../src/bronze_ingestion.py")
+  key                    = "scripts/bronze.py"
+  source                 = "${path.module}/../src/bronze.py"
+  etag                   = filemd5("${path.module}/../src/bronze.py")
   server_side_encryption = "AES256"
 }
 
-resource "aws_glue_job" "bronze_ingestion" {
-  name              = "${var.project_name}-bronze-ingestion"
+resource "aws_glue_job" "bronze" {
+  name              = "${var.project_name}-bronze"
   role_arn          = aws_iam_role.glue_bronze.arn
   glue_version      = "4.0"
   worker_type       = "G.1X"
@@ -152,7 +152,7 @@ resource "aws_glue_job" "bronze_ingestion" {
   command {
     name            = "glueetl"
     python_version  = "3"
-    script_location = "s3://${aws_s3_bucket.data_lake.bucket}/${aws_s3_object.bronze_ingestion_script.key}"
+    script_location = "s3://${aws_s3_bucket.data_lake.bucket}/${aws_s3_object.bronze_script.key}"
   }
 
   default_arguments = {
@@ -172,10 +172,9 @@ resource "aws_glue_job" "bronze_ingestion" {
   depends_on = [
     aws_iam_role_policy_attachment.glue_service,
     aws_iam_role_policy.glue_bronze_s3,
-    aws_s3_object.bronze_ingestion_script,
+    aws_s3_object.bronze_script,
   ]
 }
-
 
 resource "aws_s3_object" "bronze_quality_script" {
   bucket                 = aws_s3_bucket.data_lake.id
@@ -218,20 +217,19 @@ resource "aws_glue_job" "bronze_quality" {
   ]
 }
 
-
 resource "aws_glue_workflow" "pipeline" {
   name = "${var.project_name}-pipeline"
 
   tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "start_bronze_ingestion" {
-  name          = "${var.project_name}-start-bronze-ingestion"
+resource "aws_glue_trigger" "start_bronze" {
+  name          = "${var.project_name}-start-bronze"
   type          = "ON_DEMAND"
   workflow_name = aws_glue_workflow.pipeline.name
 
   actions {
-    job_name = aws_glue_job.bronze_ingestion.name
+    job_name = aws_glue_job.bronze.name
   }
 }
 
@@ -247,7 +245,170 @@ resource "aws_glue_trigger" "start_bronze_quality" {
 
   predicate {
     conditions {
-      job_name = aws_glue_job.bronze_ingestion.name
+      job_name = aws_glue_job.bronze.name
+      state    = "SUCCEEDED"
+    }
+  }
+}
+
+
+data "aws_iam_policy_document" "glue_silver" {
+  statement {
+    sid     = "ReadSilverScripts"
+    effect  = "Allow"
+    actions = ["s3:GetObject"]
+    resources = [
+      format("%s/scripts/silver.py", aws_s3_bucket.data_lake.arn),
+      format("%s/scripts/silver_quality.py", aws_s3_bucket.data_lake.arn),
+    ]
+  }
+
+  statement {
+    sid       = "ReadBronzeDictionaryAndFiles"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = [format("%s/*/bronze/*", aws_s3_bucket.data_lake.arn)]
+  }
+
+  statement {
+    sid    = "ReadAndWriteSilverLayer"
+    effect = "Allow"
+    actions = [
+      "s3:AbortMultipartUpload",
+      "s3:DeleteObject",
+      "s3:GetObject",
+      "s3:ListMultipartUploadParts",
+      "s3:PutObject",
+    ]
+    resources = [format("%s/*/silver/*", aws_s3_bucket.data_lake.arn)]
+  }
+}
+
+resource "aws_iam_role_policy" "glue_silver" {
+  name   = "${var.project_name}-silver-access"
+  role   = aws_iam_role.glue_bronze.id
+  policy = data.aws_iam_policy_document.glue_silver.json
+}
+
+resource "aws_s3_object" "silver_script" {
+  bucket                 = aws_s3_bucket.data_lake.id
+  key                    = "scripts/silver.py"
+  source                 = "${path.module}/../src/silver.py"
+  etag                   = filemd5("${path.module}/../src/silver.py")
+  server_side_encryption = "AES256"
+}
+
+resource "aws_glue_job" "silver" {
+  name              = "${var.project_name}-silver"
+  role_arn          = aws_iam_role.glue_bronze.arn
+  glue_version      = "4.0"
+  worker_type       = "G.1X"
+  number_of_workers = 2
+  max_retries       = 0
+  timeout           = 30
+
+  command {
+    name            = "glueetl"
+    python_version  = "3"
+    script_location = "s3://${aws_s3_bucket.data_lake.bucket}/${aws_s3_object.silver_script.key}"
+  }
+
+  default_arguments = {
+    "--TARGET_BUCKET"                    = aws_s3_bucket.data_lake.bucket
+    "--TempDir"                          = "s3://${aws_s3_bucket.data_lake.bucket}/_temporary/"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--job-bookmark-option"              = "job-bookmark-disable"
+  }
+
+  execution_property {
+    max_concurrent_runs = 1
+  }
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_iam_role_policy_attachment.glue_service,
+    aws_iam_role_policy.glue_bronze_s3,
+    aws_iam_role_policy.glue_silver,
+    aws_s3_object.silver_script,
+  ]
+}
+
+resource "aws_s3_object" "silver_quality_script" {
+  bucket                 = aws_s3_bucket.data_lake.id
+  key                    = "scripts/silver_quality.py"
+  source                 = "${path.module}/../src/silver_quality.py"
+  etag                   = filemd5("${path.module}/../src/silver_quality.py")
+  server_side_encryption = "AES256"
+}
+
+resource "aws_glue_job" "silver_quality" {
+  name              = "${var.project_name}-silver-quality"
+  role_arn          = aws_iam_role.glue_bronze.arn
+  glue_version      = "4.0"
+  worker_type       = "G.1X"
+  number_of_workers = 2
+  max_retries       = 0
+  timeout           = 60
+
+  command {
+    name            = "glueetl"
+    python_version  = "3"
+    script_location = "s3://${aws_s3_bucket.data_lake.bucket}/${aws_s3_object.silver_quality_script.key}"
+  }
+
+  default_arguments = {
+    "--TARGET_BUCKET"                    = aws_s3_bucket.data_lake.bucket
+    "--TempDir"                          = "s3://${aws_s3_bucket.data_lake.bucket}/_temporary/"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--job-bookmark-option"              = "job-bookmark-disable"
+  }
+
+  execution_property {
+    max_concurrent_runs = 1
+  }
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_iam_role_policy_attachment.glue_service,
+    aws_iam_role_policy.glue_bronze_s3,
+    aws_iam_role_policy.glue_silver,
+    aws_s3_object.silver_quality_script,
+  ]
+}
+
+resource "aws_glue_trigger" "start_silver" {
+  name              = "${var.project_name}-start-silver"
+  type              = "CONDITIONAL"
+  workflow_name     = aws_glue_workflow.pipeline.name
+  start_on_creation = true
+
+  actions {
+    job_name = aws_glue_job.silver.name
+  }
+
+  predicate {
+    conditions {
+      job_name = aws_glue_job.bronze_quality.name
+      state    = "SUCCEEDED"
+    }
+  }
+}
+
+resource "aws_glue_trigger" "start_silver_quality" {
+  name              = "${var.project_name}-start-silver-quality"
+  type              = "CONDITIONAL"
+  workflow_name     = aws_glue_workflow.pipeline.name
+  start_on_creation = true
+
+  actions {
+    job_name = aws_glue_job.silver_quality.name
+  }
+
+  predicate {
+    conditions {
+      job_name = aws_glue_job.silver.name
       state    = "SUCCEEDED"
     }
   }

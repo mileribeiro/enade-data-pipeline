@@ -30,7 +30,7 @@ Os Glue Jobs são executados em ordem: Bronze, Silver e Gold. Cada job executa s
 
 | Camada | Armazenamento | Conteúdo |
 | Bronze | Bucket S3 Bronze | Arquivos originais do INEP, sem alteração. |
-| Silver | Bucket S3 Silver | Dados tipados, tratados e agregados por curso, em Parquet. |
+| Silver | Bucket S3 Silver | TXT normalizados e convertidos em Parquet, um dataset por arquivo; metadados do dicionário normalizados. |
 | Gold | Bucket S3 Gold | Modelo dimensional pronto para consulta no Athena, em Parquet. |
 
 Os buckets terão acesso privado, criptografia e versionamento. Dados brutos não serão versionados no Git.
@@ -39,18 +39,18 @@ Os buckets terão acesso privado, criptografia e versionamento. Dados brutos nã
 
 ### 1. Ingestão - Bronze
 
-Um AWS Glue Job em Python baixa o pacote oficial dos [Microdados ENADE 2023](https://download.inep.gov.br/microdados/microdados_enade_2023.zip), preserva o arquivo original e grava os arquivos extraídos no bucket Bronze. Não há limpeza ou transformação nesta etapa.
+O ZIP oficial dos [Microdados ENADE 2023](https://download.inep.gov.br/microdados/microdados_enade_2023.zip) é enviado manualmente para `bronze/archive/`. Um AWS Glue Job em Python valida o pacote e grava os TXT extraídos e o dicionário na raiz da Bronze. Não há limpeza ou transformação nesta etapa.
 
 ### 2. Transformação - Silver
 
-Um AWS Glue Job (PySpark) lê do Bronze apenas os arquivos necessários ao escopo obrigatório:
+Um AWS Glue Job (PySpark) lê os TXT da Bronze e o dicionário oficial. Cada TXT é tratado independentemente e gravado em Parquet em `silver/<arquivo>/`.
 
-- `microdados2023_arq1.txt`: atributos de curso, IES, área e modalidade;
-- `microdados2023_arq3.txt`: nota geral (`NT_GER`).
+As transformações são seguras e reversíveis: padronização de nomes de colunas, remoção de espaços nas extremidades e conversão de campos vazios para `NULL`. Códigos permanecem como texto para preservar zeros à esquerda; `NT_GER` é convertido para `DECIMAL(5,2)`, com `.` também tratado como ausência de nota. O job também publica:
 
-Os arquivos usam `;` como delimitador. O valor `.` em `NT_GER` será convertido em `NULL` antes dos cálculos.
+- `silver/dim_variable`: definição, tipo, tamanho e regra de domínio de cada variável;
+- `silver/dim_variable_value`: códigos e rótulos para variáveis discretas.
 
-Cada origem é agregada **separadamente** por `CO_CURSO` e gravada em Parquet no bucket Silver.
+Um segundo job valida exclusivamente a Silver contra essas tabelas: colunas documentadas, datasets não vazios, domínios enumerados, intervalos numéricos e vetores de respostas. Para `NT_GER`, registra volume e percentual de nulos e falha em caso de conversão inválida, tipo diferente de decimal ou nota fora de 0 a 100.
 
 ### 3. Modelagem - Gold
 
