@@ -605,7 +605,10 @@ data "aws_iam_policy_document" "glue_gold" {
   statement {
     effect    = "Allow"
     actions   = ["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"]
-    resources = [format("%s/*/gold/*", aws_s3_bucket.data_lake.arn)]
+    resources = [
+      format("%s/*/gold/*", aws_s3_bucket.data_lake.arn),
+      format("%s/*/gold_$folder$", aws_s3_bucket.data_lake.arn),
+    ]
   }
 }
 
@@ -747,10 +750,6 @@ locals {
         { name = "no_organizacao_academica", type = "string" },
         { name = "no_categoria_administrativa", type = "string" },
         { name = "situacao_ies", type = "string" },
-        { name = "source_reference_key", type = "string" },
-        { name = "source_url", type = "string" },
-        { name = "source_staged_at", type = "string" },
-        { name = "enrichment_status", type = "string" },
       ]
     }
 

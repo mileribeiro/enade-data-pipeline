@@ -54,10 +54,12 @@ def main() -> None:
     attributes = spark.read.parquet(f"{silver}/microdados2023_arq1/")
     scores = spark.read.parquet(f"{silver}/microdados2023_arq3/")
     ies_reference = spark.read.parquet(f"{silver}/dim_ies_reference/")
+    dictionary_values = spark.read.parquet(f"{silver}/dim_variable_value/")
     attribute_columns = ["NU_ANO", "CO_CURSO", "CO_IES", "CO_GRUPO", "CO_MODALIDADE", "CO_UF_CURSO", "CO_REGIAO_CURSO"]
     required_columns(attributes, attribute_columns, "microdados2023_arq1")
     required_columns(scores, ["NU_ANO", "CO_CURSO", "NT_GER"], "microdados2023_arq3")
-    required_columns(ies_reference, ["year", "co_ies", "no_ies", "sg_ies", "no_municipio", "sg_uf", "no_organizacao_academica", "no_categoria_administrativa", "situacao_ies", "source_reference_key", "source_url", "source_staged_at"], "dim_ies_reference")
+    required_columns(ies_reference, ["year", "co_ies", "no_ies", "sg_ies", "no_municipio", "sg_uf", "no_organizacao_academica", "no_categoria_administrativa", "situacao_ies"], "dim_ies_reference")
+    required_columns(dictionary_values, ["year", "variable_name", "value_code", "value_label"], "dim_variable_value")
 
     course_source = attributes.select(*attribute_columns).dropDuplicates()
     conflicts = course_source.groupBy("CO_CURSO").count().where(F.col("count") > 1).limit(1).count()
@@ -70,11 +72,20 @@ def main() -> None:
         F.col("CO_MODALIDADE").alias("co_modalidade"), F.col("CO_UF_CURSO").alias("co_uf_curso"),
         F.col("CO_REGIAO_CURSO").alias("co_regiao_curso"),
     )
-    ies_reference = ies_reference.select("year", "co_ies", "no_ies", "sg_ies", "no_mantenedora", "nu_cnpj_mantenedora", "no_municipio", "sg_uf", "no_organizacao_academica", "no_categoria_administrativa", "situacao_ies", "source_reference_key", "source_url", "source_staged_at")
+    ies_reference = ies_reference.select("year", "co_ies", "no_ies", "sg_ies", "no_mantenedora", "nu_cnpj_mantenedora", "no_municipio", "sg_uf", "no_organizacao_academica", "no_categoria_administrativa", "situacao_ies")
     if ies_reference.groupBy("year", "co_ies").count().where(F.col("count") > 1).limit(1).count():
         raise GoldError("IES reference contains duplicate CO_IES values.")
-    dim_ies = dim_course.select("year", "co_ies").dropDuplicates().join(ies_reference, ["year", "co_ies"], "left").withColumn("enrichment_status", F.when(F.col("no_ies").isNull(), F.lit("MISSING_PUBLIC_REFERENCE")).otherwise(F.lit("MATCHED_PUBLIC_REFERENCE")))
-    dim_area = dim_course.select("year", "co_grupo").dropDuplicates().withColumn("no_grupo", F.lit(None).cast("string"))
+    dim_ies = dim_course.select("year", "co_ies").dropDuplicates().join(ies_reference, ["year", "co_ies"], "left")
+    area_reference = dictionary_values.where(F.col("variable_name") == "CO_GRUPO").select(
+        F.col("year"),
+        F.col("value_code").alias("co_grupo"),
+        F.col("value_label").alias("no_grupo"),
+    )
+    if area_reference.groupBy("year", "co_grupo").count().where(F.col("count") > 1).limit(1).count():
+        raise GoldError("CO_GRUPO has duplicate labels in dim_variable_value.")
+    dim_area = dim_course.select("year", "co_grupo").dropDuplicates().join(
+        area_reference, ["year", "co_grupo"], "left"
+    )
     dim_modalidade = dim_course.select("year", "co_modalidade").dropDuplicates().withColumn("no_modalidade", F.when(F.col("co_modalidade") == "0", "Presencial").when(F.col("co_modalidade") == "1", "EaD").otherwise(F.lit(None).cast("string")))
 
     score_value = F.col("NT_GER").cast(DecimalType(5, 2))

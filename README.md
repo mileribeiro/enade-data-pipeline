@@ -35,6 +35,19 @@ Os Glue Jobs são executados em ordem: Bronze, Silver e Gold. Cada job executa s
 
 Os buckets terão acesso privado, criptografia e versionamento. Dados brutos não serão versionados no Git.
 
+## Desenvolvimento local
+
+Crie e ative o ambiente virtual com:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+```
+
+O ambiente é usado para ferramentas auxiliares e testes locais. As bibliotecas `awsglue` e Spark são fornecidas pelo runtime do AWS Glue e não precisam ser instaladas neste ambiente.
+
 ## Pipeline
 
 ### 1. Ingestão - Bronze
@@ -57,7 +70,7 @@ Um segundo job valida exclusivamente a Silver contra essas tabelas: colunas docu
 
 Um AWS Glue Job (PySpark) lê os agregados Silver e cria:
 
-- dimensões de curso, IES, área e modalidade; a dimensão de IES é enriquecida pela referência pública e-MEC;
+- dimensões de curso, IES, área e modalidade; a dimensão de IES é enriquecida pela referência pública e-MEC e a dimensão de área usa os rótulos de `CO_GRUPO` do dicionário oficial;
 - fato de desempenho, com uma linha por `CO_CURSO`;
 - quantidade total de registros, notas válidas, notas nulas, soma e média de `NT_GER`.
 
@@ -94,7 +107,7 @@ O dashboard será feito no **Amazon QuickSight**, escolhido por sua integração
 
 O ENADE informa somente o código numérico da IES (`CO_IES`), sem o nome da instituição. A referência pública [Cadastro e-MEC](https://emec.mec.gov.br/) é preservada na Bronze, normalizada na Silver e usada para enriquecer `gold/dim_ies`.
 
-A dimensão final inclui `CO_IES`, nome, sigla, município, UF, categoria administrativa, URL da fonte e data de disponibilização no S3. A qualidade Gold falha se algum código de IES do ENADE não tiver referência pública correspondente. Assim, a Unifor é identificada pelo código `555`, sem suposição manual.
+A dimensão final inclui `CO_IES`, nome, sigla, município, UF e categoria administrativa. A proveniência da referência permanece na Silver para auditoria. Códigos de IES sem correspondência na referência atual são registrados como alerta; a qualidade Gold falha se a Unifor (`CO_IES=555`) não for enriquecida. Assim, a Unifor é identificada sem suposição manual.
 
 ## Entrega incremental - análises opcionais
 

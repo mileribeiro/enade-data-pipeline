@@ -47,8 +47,32 @@ def main() -> None:
     findings = []
     if course.groupBy("year", "co_curso").count().where("count > 1").limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "DUPLICATE_COURSE"})
-    if ies.where(F.col("no_ies").isNull() | (F.trim(F.col("no_ies")) == "")).limit(1).count():
-        findings.append({"severity": "CRITICAL", "code": "IES_WITHOUT_PUBLIC_REFERENCE"})
+
+    missing_ies = ies.where(F.col("no_ies").isNull() | (F.trim(F.col("no_ies")) == ""))
+    missing_ies_count = missing_ies.count()
+    if missing_ies_count:
+        missing_sample = [row["co_ies"] for row in missing_ies.select("co_ies").orderBy("co_ies").limit(20).collect()]
+        findings.append({
+            "severity": "WARNING",
+            "code": "IES_WITHOUT_PUBLIC_REFERENCE",
+            "message": "ENADE contains IES codes absent from the current public e-MEC reference.",
+            "count": missing_ies_count,
+            "co_ies_sample": missing_sample,
+        })
+
+    unifor = ies.where(
+        (F.col("co_ies") == "555")
+        & F.col("no_ies").isNotNull()
+        & (F.trim(F.col("no_ies")) != "")
+    )
+    if unifor.limit(1).count() == 0:
+        findings.append({
+            "severity": "CRITICAL",
+            "code": "UNIFOR_NOT_ENRICHED",
+            "message": "CO_IES 555 (Unifor) was not found in the public reference.",
+        })
+    if area.where(F.col("no_grupo").isNull() | (F.trim(F.col("no_grupo")) == "")).limit(1).count():
+        findings.append({"severity": "CRITICAL", "code": "AREA_WITHOUT_LABEL"})
     if fact.groupBy("year", "co_curso").count().where("count > 1").limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "DUPLICATE_FACT_GRAIN"})
     for dimension, keys in {
@@ -69,10 +93,12 @@ def main() -> None:
         findings.append({"severity": "CRITICAL", "code": "AVERAGE_OUT_OF_RANGE"})
     if fact.join(course.select("year", "co_curso"), ["year", "co_curso"], "left_anti").limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "FACT_WITHOUT_COURSE"})
-    report = {"status": "FAILED" if findings else "PASSED", "validated_at": datetime.now(timezone.utc).isoformat(), "report_key": f"{year}/gold/quality.json", "summary": {"critical_findings": len(findings)}, "findings": findings}
+    critical_findings = [finding for finding in findings if finding["severity"] == "CRITICAL"]
+    warning_findings = [finding for finding in findings if finding["severity"] == "WARNING"]
+    report = {"status": "FAILED" if critical_findings else "PASSED", "validated_at": datetime.now(timezone.utc).isoformat(), "report_key": f"{year}/gold/quality.json", "summary": {"critical_findings": len(critical_findings), "warning_findings": len(warning_findings), "missing_ies_reference": missing_ies_count}, "findings": findings}
     boto3.client("s3").put_object(Bucket=bucket, Key=report["report_key"], Body=json.dumps(report, indent=2).encode("utf-8"), ContentType="application/json")
     print(json.dumps(report))
-    if findings:
+    if critical_findings:
         raise GoldQualityError(f"Gold quality failed. Report: s3://{bucket}/{report['report_key']}")
     job.commit()
 
