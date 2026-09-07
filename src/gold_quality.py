@@ -73,6 +73,8 @@ def main() -> None:
         })
     if area.where(F.col("no_grupo").isNull() | (F.trim(F.col("no_grupo")) == "")).limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "AREA_WITHOUT_LABEL"})
+    if modalidade.where(F.col("no_modalidade").isNull() | (F.trim(F.col("no_modalidade")) == "")).limit(1).count():
+        findings.append({"severity": "CRITICAL", "code": "MODALIDADE_WITHOUT_LABEL"})
     if fact.groupBy("year", "co_curso").count().where("count > 1").limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "DUPLICATE_FACT_GRAIN"})
     for dimension, keys in {

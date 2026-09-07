@@ -86,7 +86,16 @@ def main() -> None:
     dim_area = dim_course.select("year", "co_grupo").dropDuplicates().join(
         area_reference, ["year", "co_grupo"], "left"
     )
-    dim_modalidade = dim_course.select("year", "co_modalidade").dropDuplicates().withColumn("no_modalidade", F.when(F.col("co_modalidade") == "0", "Presencial").when(F.col("co_modalidade") == "1", "EaD").otherwise(F.lit(None).cast("string")))
+    modality_reference = dictionary_values.where(F.col("variable_name") == "CO_MODALIDADE").select(
+        F.col("year"),
+        F.col("value_code").alias("co_modalidade"),
+        F.col("value_label").alias("no_modalidade"),
+    )
+    if modality_reference.groupBy("year", "co_modalidade").count().where(F.col("count") > 1).limit(1).count():
+        raise GoldError("CO_MODALIDADE has duplicate labels in dim_variable_value.")
+    dim_modalidade = dim_course.select("year", "co_modalidade").dropDuplicates().join(
+        modality_reference, ["year", "co_modalidade"], "left"
+    )
 
     score_value = F.col("NT_GER").cast(DecimalType(5, 2))
     fact = scores.groupBy(F.col("NU_ANO").alias("year"), F.col("CO_CURSO").alias("co_curso")).agg(
