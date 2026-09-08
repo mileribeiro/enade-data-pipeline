@@ -1,4 +1,4 @@
-# Desafio Técnico - Analista de Dados Pleno
+# Microdados Enade
 
 Pipeline em AWS para transformar os Microdados ENADE 2023 em dados analíticos e um dashboard para a coordenação acadêmica da Unifor.
 
@@ -24,11 +24,12 @@ AWS Glue Job de modelagem → S3 Gold
 Glue Data Catalog → Athena → QuickSight
 ```
 
-Os Glue Jobs são executados em ordem: Bronze, Silver e Gold. Cada job executa suas validações de qualidade e falha quando encontra um erro crítico, impedindo a publicação da camada seguinte. Logs e erros ficam registrados no CloudWatch.
+Os Glue Jobs são executados em ordem: Bronze, Silver e Gold, com um job de qualidade após cada camada. Uma falha crítica interrompe a publicação da camada seguinte. Logs e erros ficam registrados no CloudWatch.
 
 ## Camadas de dados
 
 | Camada | Armazenamento | Conteúdo |
+|---|---|---|
 | Bronze | Bucket S3 Bronze | Arquivos originais do INEP, sem alteração. |
 | Silver | Bucket S3 Silver | TXT normalizados e convertidos em Parquet, um dataset por arquivo; metadados do dicionário normalizados. |
 | Gold | Bucket S3 Gold | Modelo dimensional pronto para consulta no Athena, em Parquet. |
@@ -37,16 +38,32 @@ Os buckets terão acesso privado, criptografia e versionamento. Dados brutos nã
 
 ## Desenvolvimento local
 
-Crie e ative o ambiente virtual com:
+É necessário ter Docker, Docker Compose, GNU Make e AWS CLI instalados. A AWS CLI é usada para consultar o S3 do LocalStack. Os arquivos de entrada devem estar em `data/`:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements-dev.txt
+```text
+data/microdados_enade_2023.zip
+data/ies.xls
 ```
 
-O ambiente é usado para ferramentas auxiliares e testes locais. As bibliotecas `awsglue` e Spark são fornecidas pelo runtime do AWS Glue e não precisam ser instaladas neste ambiente.
+As dependências do Spark e do `awsglue` são fornecidas pelas imagens Docker do AWS Glue.
+
+Execute toda a pipeline localmente com LocalStack e um container por job:
+
+```bash
+docker compose up
+```
+
+Em outro terminal, liste os objetos publicados no S3 local:
+
+```bash
+make list-data
+```
+
+Para encerrar os containers:
+
+```bash
+docker compose down
+```
 
 ## Pipeline
 
@@ -119,18 +136,28 @@ As análises abaixo serão desenvolvidas somente após as três perguntas obriga
 
 Para cada área (`CO_GRUPO`) em que a Unifor atua, será identificado o melhor desempenho de IES do Brasil. O dashboard exibirá a média da IES líder, a média da Unifor e a diferença entre ambas, sempre usando notas válidas e a mesma regra de ponderação da Q2.
 
-### Perfil socioeconômico e percepção
-
-Serão explorados `QE_I08` (faixa de renda) e, se houver tempo, as respostas de percepção do curso no `arq4`. Cada arquivo adicional será agregado separadamente por `CO_CURSO` antes de ser relacionado à média de nota do curso.
-
-A análise será descritiva e no nível de curso: ela não associa resposta e nota de um mesmo estudante, não sugere causalidade e respeita a restrição de LGPD dos microdados.
-
 ## Execução local
 
-Os mesmos scripts Python serão empacotados em Docker. O Docker Compose permitirá validar a pipeline localmente com os dados extraídos do INEP antes da publicação em AWS. A configuração e os comandos exatos serão adicionados junto da implementação.
+O Docker Compose executa os mesmos scripts em imagens compatíveis com o AWS Glue e usa o LocalStack somente para emular o S3. A execução local reproduz a ordem Bronze, Silver e Gold antes da publicação em AWS.
 
 ## Limitações
 
 - O ENADE 2023 contempla apenas as áreas avaliadas naquela edição.
 - Notas ausentes não serão imputadas; serão excluídas das médias e reportadas.
 - Os microdados não permitem análises que combinem dados individuais de arquivos diferentes.
+
+## Resultado final da entrega
+
+O relacionamento da tabela fato com as dimensões no conjunto de dados do QuickSight é apresentado a seguir:
+
+![Relacionamento da tabela fato no QuickSight](images/dataflow.png)
+
+O dashboard será apresentado por imagens para evitar o custo adicional de disponibilizar um link público no QuickSight. As imagens abaixo representam a versão final entregue:
+
+![Dashboard - visão geral](images/dashboard1.png)
+
+![Dashboard - análises complementares](images/dashboard2.png)
+
+O custo final estimado da pipeline está representado na última imagem:
+
+![Custo final da pipeline](images/aws_cost.png)

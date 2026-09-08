@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
+import os
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -162,7 +163,7 @@ def main() -> None:
 
     data_prefix = f"{year}/silver"
     try:
-        datasets = silver_dataset_names(boto3.client("s3"), bucket, data_prefix)
+        datasets = silver_dataset_names(boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL")), bucket, data_prefix)
     except (BotoCoreError, ClientError) as error:
         raise SilverQualityError(f"Could not list Silver datasets: {error}") from error
     if not datasets:
@@ -193,7 +194,7 @@ def main() -> None:
 
     report = {"status": "FAILED" if findings else "PASSED", "validated_at": datetime.now(timezone.utc).isoformat(), "bucket": bucket, "silver_prefix": f"{year}/silver", "report_key": f"{year}/silver/quality.json", "summary": {"datasets_checked": len(datasets), "rules_checked": checked_rules, "critical_findings": len(findings), "nt_ger": nt_ger_metrics, "ies_reference_rows": ies_reference_rows}, "findings": findings}
     try:
-        boto3.client("s3").put_object(Bucket=bucket, Key=report["report_key"], Body=json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"), ContentType="application/json")
+        boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL")).put_object(Bucket=bucket, Key=report["report_key"], Body=json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"), ContentType="application/json")
     except (BotoCoreError, ClientError) as error:
         raise SilverQualityError(f"Could not publish Silver quality report: {error}") from error
     print(json.dumps(report, ensure_ascii=False))

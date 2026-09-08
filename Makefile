@@ -1,17 +1,8 @@
-setup:
-	@python3 -m venv .venv
-	@.venv/bin/python -m pip install --upgrade pip
-	@.venv/bin/python -m pip install -r requirements.txt
-
 trigger-pipeline:
 	@aws glue start-workflow-run --name enade-pipeline
 
 tf-apply:
 	@cd tf && terraform apply
 
-case:
-	terraform init
-	terraform plan
-	terraform apply
-
-	aws glue start-workflow-run --name enade-pipeline
+list-data:
+	@AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test aws --endpoint-url http://localhost:4566 s3 ls s3://enade-data/2023/ --recursive

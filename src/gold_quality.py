@@ -5,6 +5,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
+import os
 import boto3
 from awsglue.context import GlueContext
 from awsglue.job import Job
@@ -103,7 +104,7 @@ def main() -> None:
     critical_findings = [finding for finding in findings if finding["severity"] == "CRITICAL"]
     warning_findings = [finding for finding in findings if finding["severity"] == "WARNING"]
     report = {"status": "FAILED" if critical_findings else "PASSED", "validated_at": datetime.now(timezone.utc).isoformat(), "report_key": f"{year}/gold/quality.json", "summary": {"critical_findings": len(critical_findings), "warning_findings": len(warning_findings), "missing_ies_reference": missing_ies_count}, "findings": findings}
-    boto3.client("s3").put_object(Bucket=bucket, Key=report["report_key"], Body=json.dumps(report, indent=2).encode("utf-8"), ContentType="application/json")
+    boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL")).put_object(Bucket=bucket, Key=report["report_key"], Body=json.dumps(report, indent=2).encode("utf-8"), ContentType="application/json")
     print(json.dumps(report))
     if critical_findings:
         raise GoldQualityError(f"Gold quality failed. Report: s3://{bucket}/{report['report_key']}")

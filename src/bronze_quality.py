@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
 
+import os
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -187,7 +188,7 @@ def run_quality(
     dictionary_key = f"{bronze_prefix}/dictionary.xlsx"
     report_key = f"{bronze_prefix}/quality.json"
     findings: list[dict[str, Any]] = []
-    s3_client = boto3.client("s3")
+    s3_client = boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL"))
 
     with tempfile.TemporaryDirectory(prefix="enade_bronze_quality_") as directory:
         dictionary_path = Path(directory) / "dictionary.xlsx"
@@ -289,7 +290,7 @@ def main() -> None:
     }
 
     report = run_quality(target_bucket, year, known_missing, known_schema_divergences)
-    s3_client = boto3.client("s3")
+    s3_client = boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL"))
     try:
         s3_client.put_object(
             Bucket=target_bucket,

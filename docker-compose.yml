@@ -1,0 +1,131 @@
+services:
+  localstack:
+    image: localstack/localstack:4.14.0
+    container_name: enade-localstack
+    environment:
+      SERVICES: s3
+      AWS_DEFAULT_REGION: us-east-1
+      PERSISTENCE: "1"
+      DEBUG: "0"
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  s3-init:
+    image: amazon/aws-cli:2.36.40
+    container_name: enade-s3-init
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./data:/data:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        aws --endpoint-url http://localstack:4566 s3 mb s3://enade-data || true;
+        aws --endpoint-url http://localstack:4566 s3 cp /data/microdados_enade_2023.zip s3://enade-data/2023/bronze/archive/microdados_enade_2023.zip;
+        aws --endpoint-url http://localstack:4566 s3 cp /data/ies.xls s3://enade-data/2023/bronze/archive/ies.xls
+
+  bronze:
+    image: public.ecr.aws/glue/aws-glue-libs:glue_libs_4.0.0_image_01
+    container_name: enade-bronze
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    environment: &glue-environment
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ENDPOINT_URL_S3: http://localstack:4566
+    volumes:
+      - .:/home/glue_user/workspace:ro
+    working_dir: /home/glue_user/workspace
+    command:
+      - spark-submit
+      - --conf
+      - spark.hadoop.fs.s3a.endpoint=http://localstack:4566
+      - --conf
+      - spark.hadoop.fs.s3a.path.style.access=true
+      - src/bronze.py
+      - --JOB_NAME
+      - local-bronze
+      - --TARGET_BUCKET
+      - enade-data
+      - --YEAR
+      - "2023"
+
+  bronze-quality:
+    image: public.ecr.aws/glue/aws-glue-libs:glue_libs_4.0.0_image_01
+    container_name: enade-bronze-quality
+    depends_on:
+      bronze:
+        condition: service_completed_successfully
+    environment: *glue-environment
+    volumes:
+      - .:/home/glue_user/workspace:ro
+    working_dir: /home/glue_user/workspace
+    command: ["spark-submit", "--conf", "spark.hadoop.fs.s3a.endpoint=http://localstack:4566", "--conf", "spark.hadoop.fs.s3a.path.style.access=true", "src/bronze_quality.py", "--JOB_NAME", "local-bronze-quality", "--TARGET_BUCKET", "enade-data", "--YEAR", "2023", "--KNOWN_MISSING_FILES", "microdados2023_arq33", "--KNOWN_SCHEMA_DIVERGENCES", "microdados2023_arq3"]
+
+  silver:
+    image: public.ecr.aws/glue/aws-glue-libs:glue_libs_4.0.0_image_01
+    container_name: enade-silver
+    depends_on:
+      bronze-quality:
+        condition: service_completed_successfully
+    environment: *glue-environment
+    volumes:
+      - .:/home/glue_user/workspace:ro
+    working_dir: /home/glue_user/workspace
+    command: ["spark-submit", "--conf", "spark.hadoop.fs.s3a.endpoint=http://localstack:4566", "--conf", "spark.hadoop.fs.s3a.path.style.access=true", "src/silver.py", "--JOB_NAME", "local-silver", "--TARGET_BUCKET", "enade-data", "--YEAR", "2023"]
+
+  silver-quality:
+    image: public.ecr.aws/glue/aws-glue-libs:glue_libs_4.0.0_image_01
+    container_name: enade-silver-quality
+    depends_on:
+      silver:
+        condition: service_completed_successfully
+    environment: *glue-environment
+    volumes:
+      - .:/home/glue_user/workspace:ro
+    working_dir: /home/glue_user/workspace
+    command: ["spark-submit", "--conf", "spark.hadoop.fs.s3a.endpoint=http://localstack:4566", "--conf", "spark.hadoop.fs.s3a.path.style.access=true", "src/silver_quality.py", "--JOB_NAME", "local-silver-quality", "--TARGET_BUCKET", "enade-data", "--YEAR", "2023"]
+
+  gold:
+    image: public.ecr.aws/glue/aws-glue-libs:glue_libs_4.0.0_image_01
+    container_name: enade-gold
+    depends_on:
+      silver-quality:
+        condition: service_completed_successfully
+    environment: *glue-environment
+    volumes:
+      - .:/home/glue_user/workspace:ro
+    working_dir: /home/glue_user/workspace
+    command: ["spark-submit", "--conf", "spark.hadoop.fs.s3a.endpoint=http://localstack:4566", "--conf", "spark.hadoop.fs.s3a.path.style.access=true", "src/gold.py", "--JOB_NAME", "local-gold", "--TARGET_BUCKET", "enade-data", "--YEAR", "2023"]
+
+  gold-quality:
+    image: public.ecr.aws/glue/aws-glue-libs:glue_libs_4.0.0_image_01
+    container_name: enade-gold-quality
+    depends_on:
+      gold:
+        condition: service_completed_successfully
+    environment: *glue-environment
+    volumes:
+      - .:/home/glue_user/workspace:ro
+    working_dir: /home/glue_user/workspace
+    command: ["spark-submit", "--conf", "spark.hadoop.fs.s3a.endpoint=http://localstack:4566", "--conf", "spark.hadoop.fs.s3a.path.style.access=true", "src/gold_quality.py", "--JOB_NAME", "local-gold-quality", "--TARGET_BUCKET", "enade-data", "--YEAR", "2023"]
+
+volumes:
+  localstack-data:

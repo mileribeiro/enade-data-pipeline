@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import os
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -190,7 +191,7 @@ def run_ingestion(
 
     target_prefix = f"{year}/bronze"
     archive_key = f"{target_prefix}/archive/microdados_enade_{year}.zip"
-    s3_client = boto3.client("s3")
+    s3_client = boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL"))
 
     with tempfile.TemporaryDirectory(prefix="enade_bronze_") as temporary_directory:
         archive_path = Path(temporary_directory) / f"microdados_enade_{year}.zip"

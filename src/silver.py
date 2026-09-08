@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
 
+import os
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -340,7 +341,7 @@ def main() -> None:
         dictionary_path = Path(directory) / "dictionary.xlsx"
         ies_reference_path = Path(directory) / IES_REFERENCE_FILE_NAME
         try:
-            s3_client = boto3.client("s3")
+            s3_client = boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL"))
             s3_client.download_file(bucket, source_key, str(dictionary_path))
             s3_client.download_file(bucket, ies_reference_key, str(ies_reference_path))
             ies_staged_at = s3_client.head_object(Bucket=bucket, Key=ies_reference_key)["LastModified"].astimezone(timezone.utc).isoformat()
