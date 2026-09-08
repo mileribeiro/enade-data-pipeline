@@ -603,8 +603,8 @@ data "aws_iam_policy_document" "glue_gold" {
   }
 
   statement {
-    effect    = "Allow"
-    actions   = ["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"]
+    effect  = "Allow"
+    actions = ["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"]
     resources = [
       format("%s/*/gold/*", aws_s3_bucket.data_lake.arn),
       format("%s/*/gold_$folder$", aws_s3_bucket.data_lake.arn),
@@ -766,6 +766,38 @@ locals {
         { name = "year", type = "string" },
         { name = "co_modalidade", type = "string" },
         { name = "no_modalidade", type = "string" },
+      ]
+    }
+
+    fato_comparativo_ies_area = {
+      columns = [
+        { name = "year", type = "string" },
+        { name = "co_grupo", type = "string" },
+        { name = "co_ies_unifor", type = "string" },
+        { name = "media_unifor", type = "decimal(5,2)" },
+        { name = "melhor_co_ies", type = "string" },
+        { name = "melhor_no_ies", type = "string" },
+        { name = "media_melhor_ies", type = "decimal(5,2)" },
+        { name = "diferenca_pontos", type = "decimal(5,2)" },
+      ]
+    }
+
+    fato_perfil_nota_curso = {
+      columns = [
+        { name = "year", type = "string" },
+        { name = "co_ies", type = "string" },
+        { name = "co_grupo", type = "string" },
+        { name = "co_modalidade", type = "string" },
+        { name = "variable_name", type = "string" },
+        { name = "response_code", type = "string" },
+        { name = "response_label", type = "string" },
+        { name = "renda_faixa", type = "int" },
+        { name = "qtde_cursos", type = "bigint" },
+        { name = "qtde_respostas", type = "bigint" },
+        { name = "qtde_respostas_variavel", type = "bigint" },
+        { name = "qtde_respostas_com_nota", type = "bigint" },
+        { name = "percentual_respostas", type = "decimal(7,4)" },
+        { name = "media_nt_ger_ponderada", type = "decimal(5,2)" },
       ]
     }
 

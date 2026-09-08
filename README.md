@@ -72,6 +72,8 @@ Um AWS Glue Job (PySpark) lê os agregados Silver e cria:
 
 - dimensões de curso, IES, área e modalidade; a dimensão de IES é enriquecida pela referência pública e-MEC e a dimensão de área usa os rótulos de `CO_GRUPO` do dicionário oficial;
 - fato de desempenho, com uma linha por `CO_CURSO`;
+- `fato_comparativo_ies_area`, já com a melhor IES de cada área da Unifor, as duas médias e a diferença em pontos;
+- `fato_perfil_nota_curso`, agregada por resposta para uso direto no gráfico de relação entre renda (`QE_I05`), percepção (`QE_I27` a `QE_I60`) e nota geral;
 - quantidade total de registros, notas válidas, notas nulas, soma e média de `NT_GER`.
 
 Os dados Gold serão registrados no Glue Data Catalog e consultados pelo Athena.

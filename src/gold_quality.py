@@ -44,6 +44,7 @@ def main() -> None:
     area = spark.read.parquet(f"{gold}/dim_area/")
     modalidade = spark.read.parquet(f"{gold}/dim_modalidade/")
     fact = spark.read.parquet(f"{gold}/fato_desempenho_curso/")
+    profile_aggregate = spark.read.parquet(f"{gold}/fato_perfil_nota_curso/")
     findings = []
     if course.groupBy("year", "co_curso").count().where("count > 1").limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "DUPLICATE_COURSE"})
@@ -93,6 +94,10 @@ def main() -> None:
         findings.append({"severity": "CRITICAL", "code": "INVALID_SCORE_COUNTS"})
     if fact.where(F.col("media_nt_ger").isNotNull() & ~F.col("media_nt_ger").between(0, 100)).limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "AVERAGE_OUT_OF_RANGE"})
+    if profile_aggregate.groupBy("year", "co_ies", "co_grupo", "co_modalidade", "variable_name", "response_code").count().where("count > 1").limit(1).count():
+        findings.append({"severity": "CRITICAL", "code": "DUPLICATE_PROFILE_AGGREGATE_GRAIN"})
+    if profile_aggregate.where(F.col("percentual_respostas") < 0).limit(1).count():
+        findings.append({"severity": "CRITICAL", "code": "INVALID_PROFILE_PERCENTAGE"})
     if fact.join(course.select("year", "co_curso"), ["year", "co_curso"], "left_anti").limit(1).count():
         findings.append({"severity": "CRITICAL", "code": "FACT_WITHOUT_COURSE"})
     critical_findings = [finding for finding in findings if finding["severity"] == "CRITICAL"]

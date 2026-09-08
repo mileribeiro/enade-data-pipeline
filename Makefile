@@ -8,3 +8,10 @@ trigger-pipeline:
 
 tf-apply:
 	@cd tf && terraform apply
+
+case:
+	terraform init
+	terraform plan
+	terraform apply
+
+	aws glue start-workflow-run --name enade-pipeline
